@@ -63,6 +63,8 @@ function getSession(rawId) {
       starting: false,
       history: { status: "idle", progress: 0, messages: 0, chats: 0 },
       labels: 0,
+      /** Mapa teléfono → JID real (soporta @lid y @s.whatsapp.net). */
+      phoneJids: new Map(),
     });
   }
   return sessions.get(id);
@@ -72,8 +74,39 @@ function jidToPhone(jid = "") {
   return jid.split("@")[0].split(":")[0].replace(/\D/g, "");
 }
 
+function isLid(jid = "") {
+  return jid.endsWith("@lid");
+}
+
 function isPersonalChat(jid = "") {
   return Boolean(jid) && !jid.endsWith("@g.us") && jid !== "status@broadcast" && !jid.endsWith("@newsletter");
+}
+
+/**
+ * Resuelve el teléfono real de un JID, manejando LIDs.
+ * Con @lid el "phone" no es un número real — usamos sock.onWhatsApp()
+ * para encontrar el número o, como último recurso, el store del socket.
+ */
+async function resolvePhone(sock, jid) {
+  // JID normal: el teléfono ya es el número real.
+  if (!isLid(jid)) return jidToPhone(jid);
+
+  // Con LID: intentar buscar en el store del socket.
+  try {
+    // Baileys guarda un mapa lid↔phone en el store interno.
+    if (sock.store?.contacts) {
+      const contact = sock.store.contacts[jid];
+      if (contact?.id && !isLid(contact.id)) return jidToPhone(contact.id);
+    }
+    // Buscar el número real vía API de WhatsApp.
+    const lid = jid.split("@")[0];
+    const results = await sock.onWhatsApp(lid);
+    if (results?.[0]?.jid) return jidToPhone(results[0].jid);
+  } catch (e) {
+    console.log(`[wa] No se pudo resolver LID ${jid}: ${e.message}`);
+  }
+  // Fallback: devolver los dígitos del LID (puede no ser un teléfono válido).
+  return jidToPhone(jid);
 }
 
 function extractContent(message) {
@@ -289,10 +322,15 @@ async function startSocket(sessionId) {
         continue;
       }
 
-      console.log(`[wa:${session.id}] ← Mensaje entrante de +${jidToPhone(jid)}: "${content.text?.slice(0, 50)}" (${content.type})`);
+      // Resolver el teléfono real (necesario para JIDs @lid).
+      const phone = await resolvePhone(sock, jid);
+      // Guardar el mapeo teléfono → JID para poder responder al JID correcto.
+      session.phoneJids.set(phone, jid);
+      console.log(`[wa:${session.id}] ← Mensaje entrante de +${phone} (jid=${jid}): "${content.text?.slice(0, 50)}" (${content.type})`);
+
       await postToCrm("/api/webhooks/whatsapp", {
         session: session.id,
-        phone: jidToPhone(jid),
+        phone,
         name: msg.pushName || undefined,
         text: content.text,
         type: content.type,
@@ -330,9 +368,21 @@ function readBody(req) {
   });
 }
 
-function toJid(phone) {
+/**
+ * Construye el JID para enviar un mensaje.
+ * Busca primero en el mapa de JIDs de la sesión (que incluye @lid),
+ * y si no lo encuentra, usa el formato estándar @s.whatsapp.net.
+ */
+function toJid(phone, session) {
   const digits = String(phone || "").replace(/\D/g, "");
-  return digits ? `${digits}@s.whatsapp.net` : null;
+  if (!digits) return null;
+  // Buscar en el mapa de la sesión: puede ser un @lid.
+  if (session?.phoneJids?.has(digits)) {
+    const mapped = session.phoneJids.get(digits);
+    console.log(`[wa:${session.id}] JID mapeado: ${digits} → ${mapped}`);
+    return mapped;
+  }
+  return `${digits}@s.whatsapp.net`;
 }
 
 const server = http.createServer(async (req, res) => {
@@ -434,7 +484,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && url.pathname === "/send") {
-      const jid = toJid(body.to);
+      const jid = toJid(body.to, session);
       console.log(`[wa:${session.id}] → Enviar a ${jid}: "${(body.text || "").slice(0, 50)}"`);
       if (!jid) return send(res, 200, { ok: false, error: "Teléfono inválido." });
 
