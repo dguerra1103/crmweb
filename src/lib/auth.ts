@@ -37,7 +37,11 @@ export async function createSession(userId: string) {
   store.set(COOKIE, token, {
     httpOnly: true,
     sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    // Una cookie "secure" solo se guarda si la conexión es HTTPS real.
+    // Sin dominio/HTTPS todavía, forzarla por NODE_ENV=production
+    // botaba al usuario del login al instante. Cuando pongas HTTPS
+    // (dominio + certbot), pon FORCE_SECURE_COOKIES=true en el .env.
+    secure: process.env.FORCE_SECURE_COOKIES === "true",
     path: "/",
     maxAge: 60 * 60 * 24 * 30,
   });
