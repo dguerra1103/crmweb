@@ -10,11 +10,12 @@
 module.exports = {
   apps: [
     {
+      // Puerto 3001: en VPS con EasyPanel, el 3000 lo usa el propio panel.
       name: "crm-web",
       script: "npm",
       args: "start",
       cwd: __dirname,
-      env: { NODE_ENV: "production" },
+      env: { NODE_ENV: "production", PORT: "3001" },
       max_memory_restart: "500M",
     },
     {
