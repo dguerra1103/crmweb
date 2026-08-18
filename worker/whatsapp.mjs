@@ -95,18 +95,22 @@ function extractContent(message) {
 
 async function postToCrm(pathname, payload) {
   try {
+    console.log(`[wa] → CRM POST ${CRM_URL}${pathname}`);
     const res = await fetch(`${CRM_URL}${pathname}`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-worker-secret": SECRET },
       body: JSON.stringify(payload),
     });
     if (!res.ok) {
-      logger.warn(`CRM ${pathname} respondió ${res.status}: ${await res.text()}`);
+      const text = await res.text();
+      console.error(`[wa] ✗ CRM ${pathname} respondió ${res.status}: ${text}`);
       return null;
     }
-    return await res.json();
+    const json = await res.json();
+    console.log(`[wa] ✓ CRM ${pathname} → ok`);
+    return json;
   } catch (error) {
-    logger.warn(`No se pudo hablar con el CRM (${pathname}): ${error.message}`);
+    console.error(`[wa] ✗ No se pudo hablar con el CRM (${pathname}): ${error.message}`);
     return null;
   }
 }
@@ -269,15 +273,23 @@ async function startSocket(sessionId) {
   });
 
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
+    console.log(`[wa:${session.id}] messages.upsert: type=${type}, count=${messages.length}`);
     if (type !== "notify") return;
 
     for (const msg of messages) {
       const jid = msg.key?.remoteJid ?? "";
-      if (!isPersonalChat(jid) || msg.key?.fromMe) continue;
+      const fromMe = Boolean(msg.key?.fromMe);
+      const personal = isPersonalChat(jid);
+      console.log(`[wa:${session.id}] msg: jid=${jid}, fromMe=${fromMe}, personal=${personal}`);
+      if (!personal || fromMe) continue;
 
       const content = extractContent(msg.message);
-      if (!content) continue;
+      if (!content) {
+        console.log(`[wa:${session.id}] msg ignorado: sin contenido extraíble`);
+        continue;
+      }
 
+      console.log(`[wa:${session.id}] ← Mensaje entrante de +${jidToPhone(jid)}: "${content.text?.slice(0, 50)}" (${content.type})`);
       await postToCrm("/api/webhooks/whatsapp", {
         session: session.id,
         phone: jidToPhone(jid),
@@ -423,6 +435,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/send") {
       const jid = toJid(body.to);
+      console.log(`[wa:${session.id}] → Enviar a ${jid}: "${(body.text || "").slice(0, 50)}"`);
       if (!jid) return send(res, 200, { ok: false, error: "Teléfono inválido." });
 
       let payload;
@@ -441,6 +454,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       const sent = await session.sock.sendMessage(jid, payload);
+      console.log(`[wa:${session.id}] ✓ Enviado, id=${sent?.key?.id}`);
       return send(res, 200, { ok: true, externalId: sent?.key?.id });
     }
 
