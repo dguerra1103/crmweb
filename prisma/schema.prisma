@@ -1,0 +1,425 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+/// Usuarios del CRM. role: admin | supervisor | agent
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         String   @default("agent")
+  active       Boolean  @default(true)
+  color        String   @default("#0f766e")
+  lastSeenAt   DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  assignedContacts      Contact[]      @relation("ContactOwner")
+  assignedConversations Conversation[] @relation("ConversationAgent")
+  messages              Message[]
+  notes                 Note[]
+  tasksCreated          Task[]         @relation("TaskCreator")
+  tasksAssigned         Task[]         @relation("TaskAssignee")
+  activities            Activity[]
+  notifications         Notification[]
+  statusPosts           StatusPost[]
+  defaultChannelId      String?
+  defaultChannel        Channel?       @relation("UserDefaultChannel", fields: [defaultChannelId], references: [id], onDelete: SetNull)
+}
+
+/// Una línea de WhatsApp conectada al CRM. provider: baileys | cloud | mock
+model Channel {
+  id            String   @id @default(cuid())
+  name          String
+  /// Carpeta de sesión en el worker (una por línea)
+  sessionId     String   @unique
+  provider      String   @default("baileys")
+  workerUrl     String   @default("http://localhost:4001")
+  phoneNumberId String?
+  accessToken   String?
+  phone         String?
+  color         String   @default("#0f766e")
+  active        Boolean  @default(true)
+  order         Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  conversations Conversation[]
+  campaigns     Campaign[]
+  statusPosts   StatusPost[]
+  users         User[]         @relation("UserDefaultChannel")
+
+  @@index([active, order])
+}
+
+/// Estado de WhatsApp publicado desde el CRM
+model StatusPost {
+  id         String   @id @default(cuid())
+  channelId  String
+  authorId   String?
+  body       String   @default("")
+  mediaUrl   String?
+  background String?
+  audience   String   @default("{}")
+  recipients Int      @default(0)
+  delivered  Int      @default(0)
+  status     String   @default("sent")
+  error      String?
+  createdAt  DateTime @default(now())
+
+  channel Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  author  User?   @relation(fields: [authorId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+}
+
+/// Avisos del CRM: tareas vencidas, chats sin respuesta, fallos de envío…
+model Notification {
+  id         String    @id @default(cuid())
+  userId     String?
+  kind       String
+  title      String
+  body       String?
+  entityType String?
+  entityId   String?
+  readAt     DateTime?
+  createdAt  DateTime  @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt])
+  @@index([createdAt])
+}
+
+/// Etapas configurables del embudo (Nuevo, Interesado, Cotización…)
+model Stage {
+  id        String   @id @default(cuid())
+  name      String
+  color     String   @default("#64748b")
+  order     Int      @default(0)
+  isWon     Boolean  @default(false)
+  isLost    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  contacts Contact[]
+}
+
+model Tag {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  color     String   @default("#0ea5e9")
+  /// Id de la etiqueta en WhatsApp Business (si vino sincronizada)
+  waLabelId String?  @unique
+  waColor   Int?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt @default(now())
+
+  contacts ContactTag[]
+}
+
+model ContactTag {
+  contactId String
+  tagId     String
+  createdAt DateTime @default(now())
+
+  contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  tag     Tag     @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([contactId, tagId])
+  @@index([tagId])
+}
+
+model Contact {
+  id           String    @id @default(cuid())
+  name         String
+  phone        String    @unique
+  email        String?
+  company      String?
+  avatarUrl    String?
+  source       String    @default("whatsapp")
+  stageId      String?
+  ownerId      String?
+  isFavorite   Boolean   @default(false)
+  isBlocked    Boolean   @default(false)
+  totalSpent   Float     @default(0)
+  ordersCount  Int       @default(0)
+  lastOrderAt  DateTime?
+  lastContactAt DateTime?
+  wooCustomerId Int?
+  customFields String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  stage         Stage?         @relation(fields: [stageId], references: [id], onDelete: SetNull)
+  owner         User?          @relation("ContactOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  tags          ContactTag[]
+  conversations Conversation[]
+  notes         Note[]
+  tasks         Task[]
+  orders        Order[]
+  campaignItems CampaignRecipient[]
+
+  @@index([phone])
+  @@index([stageId])
+  @@index([ownerId])
+}
+
+/// status: open | pending | closed
+model Conversation {
+  id            String    @id @default(cuid())
+  contactId     String
+  channelId     String?
+  channel       String    @default("whatsapp")
+  externalId    String?
+  status        String    @default("open")
+  assignedToId  String?
+  unreadCount   Int       @default(0)
+  aiEnabled     Boolean   @default(false)
+  botEnabled    Boolean   @default(true)
+  isFavorite    Boolean   @default(false)
+  lastMessageAt DateTime  @default(now())
+  lastMessage   String?
+  snoozedUntil  DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  contact    Contact   @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  channelLine Channel? @relation(fields: [channelId], references: [id], onDelete: SetNull)
+  assignedTo User?     @relation("ConversationAgent", fields: [assignedToId], references: [id], onDelete: SetNull)
+  messages   Message[]
+  tasks      Task[]
+
+  @@index([channelId, lastMessageAt])
+  @@index([status, lastMessageAt])
+  @@index([contactId])
+  @@index([assignedToId])
+}
+
+/// direction: in | out. type: text | image | audio | video | document | system
+/// status: pending | sent | delivered | read | failed
+model Message {
+  id             String   @id @default(cuid())
+  conversationId String
+  direction      String
+  type           String   @default("text")
+  body           String   @default("")
+  mediaUrl       String?
+  mediaMime      String?
+  fileName       String?
+  status         String   @default("sent")
+  externalId     String?
+  senderUserId   String?
+  aiGenerated    Boolean  @default(false)
+  botGenerated   Boolean  @default(false)
+  /// true = llegó en la sincronización del historial, no en vivo
+  imported       Boolean  @default(false)
+  error          String?
+  createdAt      DateTime @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender       User?        @relation(fields: [senderUserId], references: [id], onDelete: SetNull)
+
+  @@unique([conversationId, externalId])
+  @@index([conversationId, createdAt])
+  @@index([externalId])
+}
+
+/// Nota interna: nunca se envía al cliente
+model Note {
+  id        String   @id @default(cuid())
+  contactId String
+  authorId  String?
+  body      String
+  pinned    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  author  User?   @relation(fields: [authorId], references: [id], onDelete: SetNull)
+
+  @@index([contactId, createdAt])
+}
+
+model Task {
+  id             String    @id @default(cuid())
+  title          String
+  details        String?
+  dueAt          DateTime?
+  done           Boolean   @default(false)
+  priority       String    @default("medium")
+  contactId      String?
+  conversationId String?
+  assignedToId   String?
+  createdById    String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  contact      Contact?      @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  assignedTo   User?         @relation("TaskAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  createdBy    User?         @relation("TaskCreator", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([done, dueAt])
+  @@index([assignedToId])
+}
+
+model QuickReply {
+  id       String  @id @default(cuid())
+  shortcut String  @unique
+  title    String
+  body     String
+  category String  @default("general")
+  active   Boolean @default(true)
+}
+
+/// Reglas del chatbot. match: contains | equals | starts | regex | welcome | fallback
+model BotRule {
+  id        String   @id @default(cuid())
+  name      String
+  enabled   Boolean  @default(true)
+  match     String   @default("contains")
+  keywords  String   @default("")
+  reply     String   @default("")
+  actions   String?
+  priority  Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([enabled, priority])
+}
+
+/// trigger: message_received | tag_added | stage_changed | order_paid | no_reply
+model Automation {
+  id          String    @id @default(cuid())
+  name        String
+  enabled     Boolean   @default(true)
+  trigger     String
+  conditions  String?
+  actions     String    @default("[]")
+  delayMin    Int       @default(0)
+  runCount    Int       @default(0)
+  lastRunAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([enabled, trigger])
+}
+
+/// Base de conocimiento para la IA. kind: product | faq | policy | price | note
+model Knowledge {
+  id        String   @id @default(cuid())
+  kind      String   @default("faq")
+  title     String
+  content   String
+  keywords  String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([kind, active])
+}
+
+/// status: draft | scheduled | running | done | failed
+model Campaign {
+  id          String    @id @default(cuid())
+  channelId   String?
+  name        String
+  body        String
+  mediaUrl    String?
+  status      String    @default("draft")
+  segment     String    @default("{}")
+  scheduledAt DateTime?
+  startedAt   DateTime?
+  finishedAt  DateTime?
+  sentCount   Int       @default(0)
+  failedCount Int       @default(0)
+  throttleSec Int       @default(12)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  recipients CampaignRecipient[]
+  channel    Channel?           @relation(fields: [channelId], references: [id], onDelete: SetNull)
+}
+
+model CampaignRecipient {
+  id         String    @id @default(cuid())
+  campaignId String
+  contactId  String
+  status     String    @default("pending")
+  error      String?
+  sentAt     DateTime?
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contact  Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, contactId])
+  @@index([status])
+}
+
+/// Cache local del catálogo de WooCommerce
+model Product {
+  id          String   @id @default(cuid())
+  wooId       Int      @unique
+  name        String
+  sku         String?
+  price       Float    @default(0)
+  regularPrice Float?
+  stock       Int?
+  stockStatus String   @default("instock")
+  imageUrl    String?
+  permalink   String?
+  categories  String?
+  description String?
+  syncedAt    DateTime @default(now())
+
+  @@index([name])
+}
+
+/// Pedidos sincronizados desde WooCommerce
+model Order {
+  id          String   @id @default(cuid())
+  wooId       Int      @unique
+  number      String
+  contactId   String?
+  phone       String?
+  customerName String?
+  status      String
+  total       Float    @default(0)
+  currency    String   @default("COP")
+  items       String   @default("[]")
+  paymentTitle String?
+  wooCreatedAt DateTime
+  syncedAt    DateTime @default(now())
+
+  contact Contact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+
+  @@index([phone])
+  @@index([status])
+}
+
+model Activity {
+  id         String   @id @default(cuid())
+  userId     String?
+  action     String
+  entityType String?
+  entityId   String?
+  summary    String
+  meta       String?
+  createdAt  DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([userId])
+}
+
+/// Configuración global clave/valor (JSON serializado)
+model Setting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
