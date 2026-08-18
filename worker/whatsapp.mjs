@@ -15,6 +15,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import QRCode from "qrcode";
 import pino from "pino";
+import dotenv from "dotenv";
 import {
   makeWASocket,
   useMultiFileAuthState,
@@ -23,6 +24,13 @@ import {
 } from "@whiskeysockets/baileys";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// A diferencia del CRM (Next.js carga .env solo), este script corre suelto
+// con "node worker/whatsapp.mjs" — sin esto, WA_WORKER_SECRET y el resto
+// del .env nunca llegan y el worker cae a valores por defecto, causando
+// un 401 "secreto inválido" al no coincidir con lo que manda el CRM.
+dotenv.config({ path: path.join(__dirname, "..", ".env") });
+
 const AUTH_ROOT = path.join(__dirname, "..", ".wa-auth");
 const PORT = Number(process.env.WA_WORKER_PORT || 4001);
 const SECRET = process.env.WA_WORKER_SECRET || "dev-worker-secret";
