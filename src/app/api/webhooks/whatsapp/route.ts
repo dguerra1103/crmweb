@@ -48,6 +48,7 @@ export async function POST(request: Request) {
       text: typeof body.text === "string" ? body.text : "",
       type: (body.type as "text" | "image" | "audio" | "video" | "document") ?? "text",
       externalId: typeof body.externalId === "string" ? body.externalId : undefined,
+      fromMe: body.fromMe === true,
     });
     return NextResponse.json({ ok: true, ...result });
   }

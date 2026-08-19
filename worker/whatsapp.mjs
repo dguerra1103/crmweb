@@ -314,7 +314,7 @@ async function startSocket(sessionId) {
       const fromMe = Boolean(msg.key?.fromMe);
       const personal = isPersonalChat(jid);
       console.log(`[wa:${session.id}] msg: jid=${jid}, fromMe=${fromMe}, personal=${personal}`);
-      if (!personal || fromMe) continue;
+      if (!personal) continue;
 
       const content = extractContent(msg.message);
       if (!content) {
@@ -326,8 +326,13 @@ async function startSocket(sessionId) {
       const phone = await resolvePhone(sock, jid);
       // Guardar el mapeo teléfono → JID para poder responder al JID correcto.
       session.phoneJids.set(phone, jid);
-      console.log(`[wa:${session.id}] ← Mensaje entrante de +${phone} (jid=${jid}): "${content.text?.slice(0, 50)}" (${content.type})`);
+      console.log(
+        `[wa:${session.id}] ${fromMe ? "→ (tú, desde el teléfono)" : "← Mensaje entrante"} de +${phone} (jid=${jid}): "${content.text?.slice(0, 50)}" (${content.type})`,
+      );
 
+      // Si lo mandó el propio CRM, el worker recibe el eco con el mismo
+      // externalId — el CRM lo descarta solo (deduplicación por externalId),
+      // así que no hace falta filtrarlo aquí.
       await postToCrm("/api/webhooks/whatsapp", {
         session: session.id,
         phone,
@@ -335,6 +340,7 @@ async function startSocket(sessionId) {
         text: content.text,
         type: content.type,
         externalId: msg.key.id,
+        fromMe,
       });
     }
   });

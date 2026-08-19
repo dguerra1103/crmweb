@@ -19,6 +19,8 @@ export type InboundPayload = {
   fileName?: string;
   externalId?: string;
   channel?: string;
+  /** true = lo mandaste tú desde el teléfono/WhatsApp Web, no desde el CRM. */
+  fromMe?: boolean;
 };
 
 async function defaultStageId() {
@@ -66,6 +68,12 @@ export async function handleInbound(payload: InboundPayload) {
     if (dupe) return { duplicated: true, conversationId: conversation.id };
   }
 
+  // Lo mandaste tú desde el teléfono/WhatsApp Web (no desde el CRM): se guarda
+  // como saliente, sin bot ni IA, y se marca la conversación como atendida.
+  if (payload.fromMe) {
+    return handleOutboundFromPhone(payload, contact.id, conversation.id);
+  }
+
   const isFirstMessage = (await prisma.message.count({ where: { conversationId: conversation.id } })) === 0;
   const body = payload.text?.trim() ?? "";
 
@@ -103,6 +111,43 @@ export async function handleInbound(payload: InboundPayload) {
   await runAutomations("message_received", { conversationId: conversation.id, contactId: contact.id, text: body });
 
   return { duplicated: false, conversationId: conversation.id };
+}
+
+/**
+ * Registra un mensaje que mandaste tú mismo desde el teléfono/WhatsApp Web,
+ * fuera del CRM. No dispara bot ni IA (no es un mensaje del cliente) y baja
+ * el contador de "no leídos" a 0, porque ya atendiste esa conversación ahí.
+ */
+async function handleOutboundFromPhone(payload: InboundPayload, contactId: string, conversationId: string) {
+  const body = payload.text?.trim() ?? "";
+
+  const message = await prisma.message.create({
+    data: {
+      conversationId,
+      direction: "out",
+      type: payload.type ?? "text",
+      body,
+      mediaUrl: payload.mediaUrl ?? null,
+      mediaMime: payload.mediaMime ?? null,
+      fileName: payload.fileName ?? null,
+      status: "read",
+      externalId: payload.externalId ?? null,
+    },
+  });
+
+  await prisma.conversation.update({
+    where: { id: conversationId },
+    data: {
+      lastMessageAt: message.createdAt,
+      lastMessage: body || `[${message.type}]`,
+      unreadCount: 0,
+      // Ya respondiste tú mismo: si estaba pendiente o cerrada, vuelve a abrirse.
+      status: "open",
+    },
+  });
+
+  publish({ type: "message", conversationId, contactId, text: body });
+  return { duplicated: false, conversationId };
 }
 
 async function autoRespond(conversationId: string, text: string, isFirstMessage: boolean) {
