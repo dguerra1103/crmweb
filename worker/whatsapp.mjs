@@ -161,32 +161,36 @@ function chunk(items, size) {
   return out;
 }
 
-async function sendHistory(session, { chats = [], messages = [], progress, isLatest }) {
-  const cleanChats = chats
-    .filter((chat) => isPersonalChat(chat.id))
-    .map((chat) => ({
-      phone: jidToPhone(chat.id),
+async function sendHistory(session, sock, { chats = [], messages = [], progress, isLatest }) {
+  // Igual que en messages.upsert: los chats/mensajes con JID @lid necesitan
+  // resolvePhone() (remoteJidAlt o el mapa lidMapping de Baileys), no basta
+  // con sacar los dígitos del JID — eso produce números falsos.
+  const cleanChats = [];
+  for (const chat of chats) {
+    if (!isPersonalChat(chat.id)) continue;
+    cleanChats.push({
+      phone: await resolvePhone(sock, chat.id),
       name: chat.name || undefined,
       unread: chat.unreadCount ?? 0,
       archived: Boolean(chat.archived),
-    }));
+    });
+  }
 
-  const cleanMessages = messages
-    .filter((msg) => isPersonalChat(msg.key?.remoteJid) && msg.key?.id)
-    .map((msg) => {
-      const content = extractContent(msg.message);
-      if (!content) return null;
-      return {
-        externalId: msg.key.id,
-        phone: jidToPhone(msg.key.remoteJid),
-        name: msg.pushName || undefined,
-        fromMe: Boolean(msg.key.fromMe),
-        text: content.text,
-        type: content.type,
-        timestamp: Number(msg.messageTimestamp?.low ?? msg.messageTimestamp ?? 0) || Math.floor(Date.now() / 1000),
-      };
-    })
-    .filter(Boolean);
+  const cleanMessages = [];
+  for (const msg of messages) {
+    if (!isPersonalChat(msg.key?.remoteJid) || !msg.key?.id) continue;
+    const content = extractContent(msg.message);
+    if (!content) continue;
+    cleanMessages.push({
+      externalId: msg.key.id,
+      phone: await resolvePhone(sock, msg.key.remoteJid, msg),
+      name: msg.pushName || undefined,
+      fromMe: Boolean(msg.key.fromMe),
+      text: content.text,
+      type: content.type,
+      timestamp: Number(msg.messageTimestamp?.low ?? msg.messageTimestamp ?? 0) || Math.floor(Date.now() / 1000),
+    });
+  }
 
   session.history.status = isLatest ? "complete" : "running";
   session.history.progress = Math.round(progress ?? session.history.progress);
@@ -278,7 +282,7 @@ async function startSocket(sessionId) {
   });
 
   sock.ev.on("messaging-history.set", async ({ chats, messages, progress, isLatest }) => {
-    await sendHistory(session, { chats: chats ?? [], messages: messages ?? [], progress, isLatest });
+    await sendHistory(session, sock, { chats: chats ?? [], messages: messages ?? [], progress, isLatest });
   });
 
   sock.ev.on("messaging-history.status", async ({ status }) => {
