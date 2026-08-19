@@ -83,29 +83,34 @@ function isPersonalChat(jid = "") {
 }
 
 /**
- * Resuelve el teléfono real de un JID, manejando LIDs.
- * Con @lid el "phone" no es un número real — usamos sock.onWhatsApp()
- * para encontrar el número o, como último recurso, el store del socket.
+ * Resuelve el teléfono real de un JID, manejando LIDs (identificador interno
+ * que WhatsApp usa para dispositivos vinculados — @lid, NO es un teléfono).
+ *
+ * Orden de intentos:
+ * 1. msg.key.remoteJidAlt: WhatsApp manda el JID real (@s.whatsapp.net)
+ *    junto con el @lid directo en el mensaje. Es lo más confiable y no
+ *    hace ninguna llamada extra.
+ * 2. sock.signalRepository.lidMapping.getPNForLID(): el mapa lid↔teléfono
+ *    que Baileys sincroniza internamente (API correcta — `onWhatsApp()`
+ *    NO sirve para esto, espera números reales, no LIDs).
+ * 3. Último recurso: los dígitos del propio LID. No es un teléfono real;
+ *    solo evita romper el flujo si las dos anteriores fallan.
  */
-async function resolvePhone(sock, jid) {
+async function resolvePhone(sock, jid, msg) {
   // JID normal: el teléfono ya es el número real.
   if (!isLid(jid)) return jidToPhone(jid);
 
-  // Con LID: intentar buscar en el store del socket.
+  const alt = msg?.key?.remoteJidAlt;
+  if (alt && !isLid(alt)) return jidToPhone(alt);
+
   try {
-    // Baileys guarda un mapa lid↔phone en el store interno.
-    if (sock.store?.contacts) {
-      const contact = sock.store.contacts[jid];
-      if (contact?.id && !isLid(contact.id)) return jidToPhone(contact.id);
-    }
-    // Buscar el número real vía API de WhatsApp.
-    const lid = jid.split("@")[0];
-    const results = await sock.onWhatsApp(lid);
-    if (results?.[0]?.jid) return jidToPhone(results[0].jid);
+    const pn = await sock.signalRepository?.lidMapping?.getPNForLID(jid);
+    if (pn) return jidToPhone(pn);
   } catch (e) {
-    console.log(`[wa] No se pudo resolver LID ${jid}: ${e.message}`);
+    console.log(`[wa] No se pudo resolver LID ${jid} vía lidMapping: ${e.message}`);
   }
-  // Fallback: devolver los dígitos del LID (puede no ser un teléfono válido).
+
+  console.log(`[wa] ⚠ No se pudo resolver el teléfono real de ${jid}; usando los dígitos del LID (puede ser incorrecto).`);
   return jidToPhone(jid);
 }
 
@@ -323,7 +328,7 @@ async function startSocket(sessionId) {
       }
 
       // Resolver el teléfono real (necesario para JIDs @lid).
-      const phone = await resolvePhone(sock, jid);
+      const phone = await resolvePhone(sock, jid, msg);
       // Guardar el mapeo teléfono → JID para poder responder al JID correcto.
       session.phoneJids.set(phone, jid);
       console.log(
